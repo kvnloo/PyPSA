@@ -100,6 +100,63 @@ class TestNetworkScenarioIndex:
         pd.testing.assert_index_equal(n.scenarios, expected_index)
         pd.testing.assert_frame_equal(n.scenario_weightings, expected_weights)
 
+    @pytest.mark.parametrize(
+        "scenarios",
+        [
+            ["same", "same"],
+            {1: 0.4, "1": 0.6},
+            pd.Series([0.4, 0.6], index=["same", "same"]),
+            pd.DataFrame({"probability": [0.4, 0.6]}, index=["same", "same"]),
+        ],
+        ids=["sequence", "normalized-collision", "series", "dataframe"],
+    )
+    def test_duplicate_scenario_names(self, scenarios):
+        """Reject duplicate normalized names before modifying the network."""
+        n = pypsa.Network(snapshots=[0, 1])
+        n.add("Bus", "bus")
+        n.add("Load", "load", bus="bus", p_set=[1.0, 2.0])
+        original = n.copy()
+        original_input = scenarios.copy()
+
+        with pytest.raises(ValueError, match="Scenario names must be unique"):
+            n.set_scenarios(scenarios)
+
+        assert not n.has_scenarios
+        assert n.equals(original, log_mode="strict")
+        if isinstance(scenarios, pd.Series):
+            pd.testing.assert_series_equal(scenarios, original_input)
+        elif isinstance(scenarios, pd.DataFrame):
+            pd.testing.assert_frame_equal(scenarios, original_input)
+        else:
+            assert scenarios == original_input
+
+    @pytest.mark.parametrize(
+        "scenarios",
+        [
+            {"low": 0.4, "high": 0.6},
+            {"unused": 0.0, "active": 1.0},
+            {1: 0.4, 2: 0.6},
+        ],
+        ids=["weighted", "zero-weight", "numeric-names"],
+    )
+    def test_unique_normalized_scenario_names(self, scenarios):
+        """Preserve distinct normalized names, including zero-weight scenarios."""
+        n = pypsa.Network(snapshots=[0, 1])
+        n.add("Bus", "bus")
+        n.add("Load", "load", bus="bus", p_set=[1.0, 2.0])
+
+        n.set_scenarios(scenarios)
+
+        expected_index = pd.Index([str(s) for s in scenarios], name="scenario")
+        pd.testing.assert_index_equal(n.scenarios, expected_index)
+        pd.testing.assert_index_equal(
+            n.c.buses.static.index.unique("scenario"), expected_index
+        )
+        pd.testing.assert_index_equal(
+            n.c.loads.dynamic.p_set.columns.unique("scenario"), expected_index
+        )
+        assert n.scenario_weightings["weight"].tolist() == list(scenarios.values())
+
     def test_weights_must_sum_to_one(self, ac_dc_network):
         """Test that an error is raised when scenario weights don't sum to 1."""
         n = ac_dc_network

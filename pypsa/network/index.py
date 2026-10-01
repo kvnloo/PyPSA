@@ -782,6 +782,10 @@ class NetworkIndexMixin(_NetworkABC):
         scenarios_.index = scenarios_.index.astype(str)
         scenarios_.index.name = "scenario"
 
+        if not scenarios_.index.is_unique:
+            msg = "Scenario names must be unique after converting to strings."
+            raise ValueError(msg)
+
         if any(
             not df.empty
             for c in self.components.values()
