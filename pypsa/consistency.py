@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -1114,10 +1115,10 @@ class NetworkConsistencyMixin(_NetworkABC):
 
 
 def check_scenarios_sum_to_one(n: NetworkType, strict: bool = False) -> None:
-    """Check if scenarios probabilities sum to 1.
+    """Check if scenario probabilities are finite, non-negative and sum to 1.
 
     This check verifies that scenario probabilities have not been modified after
-    initialization to break the constraint that they must sum to 1.
+    initialization to break these constraints.
 
     Activate strict mode in general consistency check by passing `['scenarios_sum']`
     to the `strict` argument.
@@ -1135,7 +1136,18 @@ def check_scenarios_sum_to_one(n: NetworkType, strict: bool = False) -> None:
 
     """
     if n.has_scenarios:
-        total_weight = n.scenario_weightings["weight"].sum()
+        weights = n.scenario_weightings["weight"]
+        if weights.isna().any() or any(
+            not isfinite(weight) or weight < 0 for weight in weights
+        ):
+            _log_or_raise(
+                strict,
+                "Scenario probabilities must be finite and non-negative. "
+                "This may indicate scenarios were modified after initialization.",
+            )
+            return
+
+        total_weight = weights.sum()
 
         if not np.isclose(total_weight, 1.0, rtol=1e-10, atol=1e-10):
             _log_or_raise(
