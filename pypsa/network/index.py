@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -771,6 +772,12 @@ class NetworkIndexMixin(_NetworkABC):
             msg = "Invalid type for `scenarios`. Must be dict, pd.DataFrame, pd.Series, or Sequence. "
             raise TypeError(msg)
 
+        if scenarios_.isna().any() or any(
+            not isfinite(weight) or weight < 0 for weight in scenarios_
+        ):
+            msg = "The weights in `scenarios` must be finite and non-negative."
+            raise ValueError(msg)
+
         if abs(scenarios_.sum() - 1) > 1e-5:
             msg = (
                 "The sum of the weights in `scenarios` must be equal to 1. "
@@ -781,6 +788,10 @@ class NetworkIndexMixin(_NetworkABC):
         scenarios_ = scenarios_.rename("weight")
         scenarios_.index = scenarios_.index.astype(str)
         scenarios_.index.name = "scenario"
+
+        if not scenarios_.index.is_unique:
+            msg = "Scenario names must be unique after converting to strings."
+            raise ValueError(msg)
 
         if any(
             not df.empty

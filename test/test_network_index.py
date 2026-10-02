@@ -2,6 +2,9 @@
 #
 # SPDX-License-Identifier: MIT
 
+from decimal import Decimal
+from fractions import Fraction
+
 import pandas as pd
 import pytest
 
@@ -99,6 +102,140 @@ class TestNetworkScenarioIndex:
 
         pd.testing.assert_index_equal(n.scenarios, expected_index)
         pd.testing.assert_frame_equal(n.scenario_weightings, expected_weights)
+
+    @pytest.mark.parametrize(
+        "scenarios",
+        [
+            ["same", "same"],
+            {1: 0.4, "1": 0.6},
+            pd.Series([0.4, 0.6], index=["same", "same"]),
+            pd.DataFrame({"probability": [0.4, 0.6]}, index=["same", "same"]),
+        ],
+        ids=["sequence", "normalized-collision", "series", "dataframe"],
+    )
+    def test_duplicate_scenario_names(self, scenarios):
+        """Reject duplicate normalized names before modifying the network."""
+        n = pypsa.Network(snapshots=[0, 1])
+        n.add("Bus", "bus")
+        n.add("Load", "load", bus="bus", p_set=[1.0, 2.0])
+        original = n.copy()
+        original_input = scenarios.copy()
+
+        with pytest.raises(ValueError, match="Scenario names must be unique"):
+            n.set_scenarios(scenarios)
+
+        assert not n.has_scenarios
+        assert n.equals(original, log_mode="strict")
+        if isinstance(scenarios, pd.Series):
+            pd.testing.assert_series_equal(scenarios, original_input)
+        elif isinstance(scenarios, pd.DataFrame):
+            pd.testing.assert_frame_equal(scenarios, original_input)
+        else:
+            assert scenarios == original_input
+
+    @pytest.mark.parametrize(
+        "scenarios",
+        [
+            {"low": 0.4, "high": 0.6},
+            {"unused": 0.0, "active": 1.0},
+            {1: 0.4, 2: 0.6},
+        ],
+        ids=["weighted", "zero-weight", "numeric-names"],
+    )
+    def test_unique_normalized_scenario_names(self, scenarios):
+        """Preserve distinct normalized names, including zero-weight scenarios."""
+        n = pypsa.Network(snapshots=[0, 1])
+        n.add("Bus", "bus")
+        n.add("Load", "load", bus="bus", p_set=[1.0, 2.0])
+
+        n.set_scenarios(scenarios)
+
+        expected_index = pd.Index([str(s) for s in scenarios], name="scenario")
+        pd.testing.assert_index_equal(n.scenarios, expected_index)
+        pd.testing.assert_index_equal(
+            n.c.buses.static.index.unique("scenario"), expected_index
+        )
+        pd.testing.assert_index_equal(
+            n.c.loads.dynamic.p_set.columns.unique("scenario"), expected_index
+        )
+        assert n.scenario_weightings["weight"].tolist() == list(scenarios.values())
+
+    @pytest.mark.parametrize(
+        "scenarios",
+        [
+            {"low": -0.5, "high": 1.5},
+            {"low": -1e-12, "high": 1.0 + 1e-12},
+            {"low": float("nan"), "high": 1.0},
+            {"low": None, "high": 1.0},
+            pd.Series([pd.NA, 1.0], index=["low", "high"], dtype="Float64"),
+            pd.DataFrame({"probability": [float("nan"), 1.0]}, index=["low", "high"]),
+            {"low": float("inf"), "high": 0.0},
+            {"low": float("-inf"), "high": 0.0},
+            {"low": float("inf"), "high": float("-inf")},
+        ],
+        ids=[
+            "negative",
+            "small-negative",
+            "nan",
+            "none",
+            "nullable-series",
+            "missing-dataframe",
+            "positive-infinity",
+            "negative-infinity",
+            "opposing-infinities",
+        ],
+    )
+    def test_invalid_scenario_probabilities(self, scenarios):
+        """Reject invalid probabilities before modifying the network."""
+        n = pypsa.Network(snapshots=[0, 1])
+        n.add("Bus", "bus")
+        n.add("Load", "load", bus="bus", p_set=[1.0, 2.0])
+        original = n.copy()
+
+        with pytest.raises(ValueError, match="must be finite and non-negative"):
+            n.set_scenarios(scenarios)
+
+        assert not n.has_scenarios
+        assert n.equals(original, log_mode="strict")
+
+    @pytest.mark.parametrize(
+        "weights",
+        [
+            pd.Series([0.4, 0.6]),
+            pd.Series([0.0, 1.0]),
+            pd.Series([0, 1]),
+            pd.Series([0.5, 0.500005]),
+            pd.Series([0.5, 0.499995]),
+            pd.Series([0.4, 0.6], dtype=object),
+            pd.Series([0.4, 0.6], dtype="Float64"),
+            pd.Series([Decimal("0.4"), Decimal("0.6")]),
+            pd.Series([Fraction(2, 5), Fraction(3, 5)]),
+        ],
+        ids=[
+            "weighted",
+            "zero-weight",
+            "integer",
+            "sum-above-one",
+            "sum-below-one",
+            "object-floats",
+            "nullable-floats",
+            "decimal",
+            "fraction",
+        ],
+    )
+    def test_valid_scenario_probabilities(self, weights):
+        """Preserve numeric types, zero weights and the existing sum tolerance."""
+        n = pypsa.Network()
+        scenarios = weights.copy()
+        scenarios.index = pd.Index(["low", "high"], name="original_index")
+        scenarios.name = "probability"
+        original_input = scenarios.copy()
+
+        n.set_scenarios(scenarios)
+
+        expected = original_input.rename("weight").rename_axis("scenario").to_frame()
+        pd.testing.assert_frame_equal(n.scenario_weightings, expected)
+        pd.testing.assert_series_equal(scenarios, original_input)
 
     def test_weights_must_sum_to_one(self, ac_dc_network):
         """Test that an error is raised when scenario weights don't sum to 1."""

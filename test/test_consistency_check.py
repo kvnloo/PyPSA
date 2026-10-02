@@ -166,6 +166,88 @@ def test_scenarios_sum_to_one(consistent_n, caplog, strict):
     assert_log_or_error_in_consistency(consistent_n, caplog, strict=strict)
 
 
+@pytest.fixture
+def scenario_n():
+    n = pypsa.Network(snapshots=[0, 1])
+    n.add("Carrier", "AC")
+    n.add("Bus", "bus", carrier="AC")
+    n.add("Load", "load", bus="bus", p_set=[1.0, 2.0])
+    n.set_scenarios({"low": 0.4, "high": 0.6})
+    return n
+
+
+@pytest.mark.parametrize("strict", [[], ["scenarios_sum"], "all"])
+@pytest.mark.parametrize(
+    "weights",
+    [
+        pd.Series([-0.5, 1.5]),
+        pd.Series([np.nan, 1.0]),
+        pd.Series([pd.NA, 1.0], dtype="Float64"),
+        pd.Series([np.inf, -np.inf]),
+        pd.Series([np.inf, 0.0]),
+        pd.Series([-np.inf, 0.0]),
+    ],
+    ids=[
+        "negative",
+        "nan",
+        "nullable",
+        "opposing-infinities",
+        "positive-infinity",
+        "negative-infinity",
+    ],
+)
+def test_modified_scenario_probabilities(scenario_n, caplog, strict, weights):
+    """Validate edited probabilities through the existing warning/strict API."""
+    n = scenario_n
+    n.scenario_weightings["weight"] = weights.set_axis(n.scenarios)
+    original = n.scenario_weightings.copy()
+    message = "Scenario probabilities must be finite and non-negative"
+
+    if strict:
+        with pytest.raises(pypsa.consistency.ConsistencyError, match=message):
+            n.consistency_check(strict=strict)
+    else:
+        n.consistency_check(strict=strict)
+        records = [r for r in caplog.records if "Scenario probabilities" in r.message]
+        assert len(records) == 1
+        assert records[0].levelname == "WARNING"
+        assert message in records[0].message
+
+    pd.testing.assert_frame_equal(n.scenario_weightings, original)
+
+
+@pytest.mark.parametrize("strict", [[], ["scenarios_sum"], "all"])
+@pytest.mark.parametrize(
+    "weights",
+    [
+        pd.Series([0.4, 0.6]),
+        pd.Series([0.0, 1.0]),
+        pd.Series([-0.0, 1.0], dtype="Float32"),
+        pd.Series([0.4, 0.6], dtype=object),
+        pd.Series([0.4, 0.6], dtype="Float64"),
+        pd.Series([0.5, 0.50000000005]),
+    ],
+    ids=[
+        "weighted",
+        "zero-weight",
+        "signed-zero",
+        "object-floats",
+        "nullable-floats",
+        "sum-tolerance",
+    ],
+)
+def test_valid_modified_scenario_probabilities(scenario_n, caplog, strict, weights):
+    """Keep valid edited probabilities unchanged, including zero weights."""
+    n = scenario_n
+    n.scenario_weightings["weight"] = weights.set_axis(n.scenarios)
+    original = n.scenario_weightings.copy()
+
+    n.consistency_check(strict=strict)
+
+    assert not any("Scenario probabilities" in r.message for r in caplog.records)
+    pd.testing.assert_frame_equal(n.scenario_weightings, original)
+
+
 @pytest.mark.parametrize("strict", [[], ["generators"]])
 def test_committable_down_with_p_init(consistent_n, caplog, strict):
     consistent_n.add(
